@@ -4,6 +4,10 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
+import 'package:flutter_sound/flutter_sound.dart';
+import 'package:flutter_sound/public/flutter_sound_player.dart';
+import 'package:flutter_sound/public/flutter_sound_recorder.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:transparency_mode_audio/extension_methods/random_extension.dart';
 import 'package:transparency_mode_audio/generated/l10n.dart';
 import 'package:transparency_mode_audio/screens/home_page_bloc.dart';
@@ -23,6 +27,52 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   List<Animation<double>> _animations;
   math.Random _random;
 
+  FlutterSoundPlayer _mPlayer = FlutterSoundPlayer();
+  bool _mPlayerIsInited = false;
+
+  Future<void> open() async {
+    var status = await Permission.microphone.request();
+    if (status != PermissionStatus.granted) {
+      throw RecordingPermissionException('Microphone permission not granted');
+    }
+
+    // Be careful : openAudioSession returns a Future.
+    // Do not access your FlutterSoundPlayer or FlutterSoundRecorder before the completion of the Future
+    _mPlayer
+        .openAudioSession(
+      device: AudioDevice.blueToothA2DP,
+      audioFlags: outputToSpeaker, //allowBlueToothA2DP,
+      category: SessionCategory.playAndRecord,
+    )
+        .then((value) {
+      setState(() {
+        _mPlayerIsInited = true;
+      });
+    });
+  }
+
+  void Function() getPlaybackFn() {
+    if (!_mPlayerIsInited) {
+      return null;
+    }
+    return _mPlayer.isStopped
+        ? play
+        : () {
+            stopPlayer().then((value) => setState(() {}));
+          };
+  }
+
+  void play() async {
+    await _mPlayer.startPlayerFromMic();
+    setState(() {});
+  }
+
+  Future<void> stopPlayer() async {
+    if (_mPlayer != null) {
+      await _mPlayer.stopPlayer();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -35,18 +85,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           lowerBound: 0.0,
           upperBound: 1.0,
           duration: Duration(milliseconds: _random.nextIntInRange(900, 1700)))
-        ..repeat(reverse: true);
+        ..repeat(reverse: true)
+        ..stop();
       _animations[i] = CurvedAnimation(
         parent: _animationControllers[i],
         curve: Curves.bounceInOut,
       );
     }
+    open();
   }
 
   @override
   void dispose() {
     super.dispose();
     _animationControllers.forEach((element) => element.dispose());
+    stopPlayer();
+    // Be careful : you must `close` the audio session when you have finished with it.
+    _mPlayer.closeAudioSession();
+    _mPlayer = null;
   }
 
   @override
@@ -66,7 +122,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 BlocConsumer<HomePageBloc, HomePageState>(
               listener: (BuildContext context, HomePageState state) {
                 if (!state.listening)
-                  _animationControllers.forEach((element) => element.stop());
+                  _animationControllers.forEach((element) =>
+                      element.animateBack(0.0,
+                          duration: Duration(milliseconds: 900),
+                          curve: Curves.bounceOut));
                 if (state.listening)
                   _animationControllers
                       .forEach((element) => element.repeat(reverse: true));
@@ -100,9 +159,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     )),
                     Center(
                       child: GestureDetector(
-                        onTap: () => context
-                            .read<HomePageBloc>()
-                            .add(HomePageTransparencyButtonClicked()),
+                        onTap: () {
+                          context
+                              .read<HomePageBloc>()
+                              .add(HomePageTransparencyButtonClicked());
+                          final func = getPlaybackFn();
+                          func();
+                        },
                         child: Container(
                           width: circleSize,
                           height: circleSize,
@@ -112,7 +175,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                   Border.all(color: Colors.blue, width: 2.0),
                               shape: BoxShape.circle),
                           child: Icon(
-                            Icons.hearing,
+                            Icons.mic,
                             size: 100.0,
                           ),
                         ),
